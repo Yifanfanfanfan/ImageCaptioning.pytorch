@@ -43,6 +43,21 @@ def pickle_dump(obj, f):
         return cPickle.dump(obj, f)
 
 
+# modified from https://github.com/facebookresearch/detectron2/blob/master/detectron2/utils/comm.py
+def serialize_to_tensor(data):
+    device = torch.device("cpu")
+
+    buffer = cPickle.dumps(data)
+    storage = torch.ByteStorage.from_buffer(buffer)
+    tensor = torch.ByteTensor(storage).to(device=device)
+    return tensor
+
+
+def deserialize(tensor):
+    buffer = tensor.cpu().numpy().tobytes()
+    return cPickle.loads(buffer)
+
+
 # Input: seq, N*D numpy array, with element 0 .. vocab_size. 0 is END token.
 def decode_sequence(ix_to_word, seq):
     N, D = seq.size()
@@ -171,6 +186,17 @@ class NoamOpt(object):
 
     def __getattr__(self, name):
         return getattr(self.optimizer, name)
+
+    def state_dict(self):
+        state_dict = self.optimizer.state_dict()
+        state_dict['_step'] = self._step
+        return state_dict
+
+    def load_state_dict(self, state_dict):
+        if '_step' in state_dict:
+            self._step = state_dict['_step']
+            del state_dict['_step']
+        self.optimizer.load_state_dict(state_dict)
 
 class ReduceLROnPlateau(object):
     "Optim wrapper that implements rate."

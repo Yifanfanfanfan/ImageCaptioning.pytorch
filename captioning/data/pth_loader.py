@@ -33,15 +33,14 @@ class HybridLoader:
         if self.ext == '.npy':
             self.loader = lambda x: np.load(six.BytesIO(x))
         else:
-            def load_npz(x):
-                x = np.load(six.BytesIO(x))
-                return x['feat'] if 'feat' in x else x['z']  # normally it should be 'feat', but under cocotest_bu, the key is saved to be 'z' mistakenly.
-            self.loader = load_npz
+            self.loader = lambda x: np.load(six.BytesIO(x))['feat']
         if db_path.endswith('.lmdb'):
             self.db_type = 'lmdb'
-            self.env = lmdb.open(db_path, subdir=os.path.isdir(db_path),
+            env = lmdb.open(db_path, subdir=os.path.isdir(db_path),
                                 readonly=True, lock=False,
-                                readahead=False, meminit=False)
+                                readahead=False, meminit=False,
+                                map_size=1099511627776 * 2,)
+            self.db_txn = env.begin(write=False)
         elif db_path.endswith('.pth'): # Assume a key,value dictionary
             self.db_type = 'pth'
             self.feat_file = torch.load(db_path)
@@ -57,6 +56,21 @@ class HybridLoader:
         if self.in_memory:
             self.features = {}
     
+    def __getstate__(self):
+        state = self.__dict__
+        if self.db_type == 'lmdb':
+            state["db_txn"] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__ = state
+        if self.db_type == 'lmdb':
+            env = lmdb.open(self.db_path, subdir=os.path.isdir(self.db_path),
+                                readonly=True, lock=False,
+                                readahead=False, meminit=False,
+                                map_size=1099511627776 * 2,)
+            self.db_txn = env.begin(write=False)
+
     def get(self, key):
 
         if self.in_memory and key in self.features:
@@ -65,8 +79,7 @@ class HybridLoader:
             f_input = self.features[key]
         elif self.db_type == 'lmdb':
             env = self.env
-            with env.begin(write=False) as txn:
-                byteflow = txn.get(key.encode())
+            byteflow = self.db_txn.get(key.encode())
             f_input = byteflow
         elif self.db_type == 'pth':
             f_input = self.feat_file[key]
@@ -83,7 +96,7 @@ class HybridLoader:
 
         return feat
 
-class Dataset(data.Dataset):
+class CaptionDataset(data.Dataset):
     
     def get_vocab_size(self):
         return self.vocab_size
@@ -180,7 +193,7 @@ class Dataset(data.Dataset):
 
         return seq
 
-    def collate_func(self, batch, split):
+    def collate_func(self, batch):
         seq_per_img = self.seq_per_img
 
         fc_batch = []
@@ -195,9 +208,7 @@ class Dataset(data.Dataset):
         for sample in batch:
             # fetch image
             tmp_fc, tmp_att, tmp_seq, \
-                ix, it_pos_now, tmp_wrapped = sample
-            if tmp_wrapped:
-                wrapped = True
+                ix = sample
 
             fc_batch.append(tmp_fc)
             att_batch.append(tmp_att)
@@ -252,18 +263,15 @@ class Dataset(data.Dataset):
         data['masks'] = data['masks'].reshape(len(batch), seq_per_img, -1)
 
         data['gts'] = gts # all ground truth captions of each images
-        data['bounds'] = {'it_pos_now': it_pos_now, # the it_pos_now of the last sample
-                          'it_max': len(self.split_ix[split]), 'wrapped': wrapped}
         data['infos'] = infos
 
         data = {k:torch.from_numpy(v) if type(v) is np.ndarray else v for k,v in data.items()} # Turn all ndarray to torch tensor
 
         return data
 
-    def __getitem__(self, index):
+    def __getitem__(self, ix):
         """This function returns a tuple that is further passed to collate_fn
         """
-        ix, it_pos_now, wrapped = index #self.split_ix[index]
         if self.use_att:
             att_feat = self.att_loader.get(str(self.info['images'][ix]['id']))
             # Reshape to K x C
@@ -297,130 +305,15 @@ class Dataset(data.Dataset):
             seq = None
         return (fc_feat,
                 att_feat, seq,
-                ix, it_pos_now, wrapped)
+                ix)
 
     def __len__(self):
         return len(self.info['images'])
 
-class DataLoader:
-    def __init__(self, opt):
-        self.opt = opt
-        self.batch_size = self.opt.batch_size
-        self.dataset = Dataset(opt)
 
-        # Initialize loaders and iters
-        self.loaders, self.iters = {}, {}
-        for split in ['train', 'val', 'test']:
-            if split == 'train':
-                sampler = MySampler(self.dataset.split_ix[split], shuffle=True, wrap=True)
-            else:
-                sampler = MySampler(self.dataset.split_ix[split], shuffle=False, wrap=False)
-            self.loaders[split] = data.DataLoader(dataset=self.dataset,
-                                                  batch_size=self.batch_size,
-                                                  sampler=sampler,
-                                                  pin_memory=True,
-                                                  num_workers=4, # 4 is usually enough
-                                                  collate_fn=lambda x: self.dataset.collate_func(x, split),
-                                                  drop_last=False)
-            self.iters[split] = iter(self.loaders[split])
-
-    def get_batch(self, split):
-        try:
-            data = next(self.iters[split])
-        except StopIteration:
-            self.iters[split] = iter(self.loaders[split])
-            data = next(self.iters[split])
-        return data
-
-    def reset_iterator(self, split):
-        self.loaders[split].sampler._reset_iter()
-        self.iters[split] = iter(self.loaders[split])
-
-    def get_vocab_size(self):
-        return self.dataset.get_vocab_size()
-
-    @property
-    def vocab_size(self):
-        return self.get_vocab_size()
-
-    def get_vocab(self):
-        return self.dataset.get_vocab()
-
-    def get_seq_length(self):
-        return self.dataset.get_seq_length()
-
-    @property
-    def seq_length(self):
-        return self.get_seq_length()
-
-    def state_dict(self):
-        def get_prefetch_num(split):
-            if self.loaders[split].num_workers > 0:
-                return (self.iters[split]._send_idx - self.iters[split]._rcvd_idx) * self.batch_size
-            else:
-                return 0
-        return {split: loader.sampler.state_dict(get_prefetch_num(split)) \
-                    for split, loader in self.loaders.items()}
-
-    def load_state_dict(self, state_dict=None):
-        if state_dict is None:
-            return
-        for split in self.loaders.keys():
-            self.loaders[split].sampler.load_state_dict(state_dict[split])
-
-
-class MySampler(data.sampler.Sampler):
-    def __init__(self, index_list, shuffle, wrap):
-        self.index_list = index_list
-        self.shuffle = shuffle
-        self.wrap = wrap
-        # if wrap, there will be not stop iteration called
-        # wrap True used during training, and wrap False used during test.
-        self._reset_iter()
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        wrapped = False
-        if self.iter_counter == len(self._index_list):
-            self._reset_iter()
-            if self.wrap:
-                wrapped = True
-            else:
-                raise StopIteration()
-        if len(self._index_list) == 0: # overflow when 0 samples
-            return None
-        elem = (self._index_list[self.iter_counter], self.iter_counter+1, wrapped)
-        self.iter_counter += 1
-        return elem
-
-    def next(self):
-        return self.__next__()
-
-    def _reset_iter(self):
-        if self.shuffle:
-            rand_perm = npr.permutation(len(self.index_list))
-            self._index_list = [self.index_list[_] for _ in rand_perm]
-        else:
-            self._index_list = self.index_list
-
-        self.iter_counter = 0
-
-    def __len__(self):
-        return len(self.index_list)
-
-    def load_state_dict(self, state_dict=None):
-        if state_dict is None:
-            return
-        self._index_list = state_dict['index_list']
-        self.iter_counter = state_dict['iter_counter']
-
-    def state_dict(self, prefetched_num=None):
-        prefetched_num = prefetched_num or 0
-        return {
-            'index_list': self._index_list,
-            'iter_counter': self.iter_counter - prefetched_num
-        }
-
-    
+if __name__ == '__main__':
+    from captioning.utils.misc import pickle_load
+    x = pickle_load(open('log_trans/infos_trans.pkl', 'rb'))
+    dataset = Dataset(x['opt'])
+    ds = torch.utils.data.Subset(dataset, dataset.split_ix['train'])
+    import pudb;pu.db
