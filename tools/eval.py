@@ -6,9 +6,10 @@ import json
 import numpy as np
 
 import time
-import os
+import sys,os
 from six.moves import cPickle
-
+BASE_DIR = os.path.dirname("__file__")
+sys.path.append(BASE_DIR)
 import captioning.utils.opts as opts
 import captioning.models as models
 from captioning.data.dataloader import *
