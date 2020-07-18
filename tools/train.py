@@ -10,7 +10,9 @@ from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 
 import time
-import os
+import os,sys
+BASE_DIR = os.path.dirname("__file__")
+sys.path.append(BASE_DIR)
 from six.moves import cPickle
 import traceback
 from collections import defaultdict
