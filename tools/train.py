@@ -278,13 +278,13 @@ def train(opt):
 
                 if best_flag:
                     utils.save_checkpoint(opt, model, infos, optimizer, append='best')
-
+            '''
     except (RuntimeError, KeyboardInterrupt):
         print('Save ckpt on exception ...')
         utils.save_checkpoint(opt, model, infos, optimizer)
         print('Save ckpt done.')
         stack_trace = traceback.format_exc()
         print(stack_trace)
-'''
+
 opt = opts.parse_opt()
 train(opt)
