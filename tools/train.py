@@ -177,9 +177,10 @@ def train(opt):
             tmp = [data['fc_feats'], data['att_feats'], data['labels'], data['masks'], data['att_masks']]
             print('fc_feats size is: {}'.format(data['fc_feats'].size()))
             print('att_feats size is {}'.format(data['att_feats'].size()))
+            print('labels is {}'.format(data['labels']))
             print('labels size is {}'.format(data['labels'].size()))
             print('masks size is {}'.format(data['masks'].size()))
-            print('att_masks size is {}'.format(data['att_masks']))
+            print('att_masks is {}'.format(data['att_masks']))
             break
             '''
             tmp = [_ if _ is None else _.cuda() for _ in tmp]
