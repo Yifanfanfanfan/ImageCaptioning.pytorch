@@ -173,6 +173,8 @@ def train(opt):
             start = time.time()
 
             tmp = [data['fc_feats'], data['att_feats'], data['labels'], data['masks'], data['att_masks']]
+            print(tmp)
+            '''
             tmp = [_ if _ is None else _.cuda() for _ in tmp]
             fc_feats, att_feats, labels, masks, att_masks = tmp
             
@@ -281,7 +283,7 @@ def train(opt):
         print('Save ckpt done.')
         stack_trace = traceback.format_exc()
         print(stack_trace)
-
+        '''
 
 opt = opts.parse_opt()
 train(opt)
