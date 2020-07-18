@@ -285,7 +285,6 @@ def train(opt):
         print('Save ckpt done.')
         stack_trace = traceback.format_exc()
         print(stack_trace)
-        '''
-
+'''
 opt = opts.parse_opt()
 train(opt)
